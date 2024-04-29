@@ -12,7 +12,7 @@ from openai.openai_object import OpenAIObject
 import tiktoken
 
 from slack_bolt import BoltContext
-from slack_sdk.web import WebClient
+from slack_sdk.web import WebClient, SlackResponse
 
 from app.markdown import slack_to_markdown, markdown_to_slack
 from app.openai_constants import (
@@ -20,11 +20,18 @@ from app.openai_constants import (
     GPT_3_5_TURBO_MODEL,
     GPT_3_5_TURBO_0301_MODEL,
     GPT_3_5_TURBO_0613_MODEL,
+    GPT_3_5_TURBO_1106_MODEL,
+    GPT_3_5_TURBO_0125_MODEL,
     GPT_3_5_TURBO_16K_MODEL,
     GPT_3_5_TURBO_16K_0613_MODEL,
     GPT_4_MODEL,
     GPT_4_0314_MODEL,
     GPT_4_0613_MODEL,
+    GPT_4_1106_PREVIEW_MODEL,
+    GPT_4_0125_PREVIEW_MODEL,
+    GPT_4_TURBO_PREVIEW_MODEL,
+    GPT_4_TURBO_MODEL,
+    GPT_4_TURBO_2024_04_09_MODEL,
     GPT_4_32K_MODEL,
     GPT_4_32K_0314_MODEL,
     GPT_4_32K_0613_MODEL,
@@ -39,7 +46,9 @@ _prompt_tokens_used_by_function_call_cache: Optional[int] = None
 
 
 # Format message from Slack to send to OpenAI
-def format_openai_message_content(content: str, translate_markdown: bool) -> str:
+def format_openai_message_content(
+    content: str, translate_markdown: bool
+) -> Optional[str]:
     if content is None:
         return None
 
@@ -76,6 +85,9 @@ def messages_within_context_window(
         if not removed:
             # Fall through and let the OpenAI error handler deal with it
             break
+    else:
+        num_context_tokens = num_tokens
+
     return messages, num_context_tokens, max_context_tokens
 
 
@@ -153,7 +165,7 @@ def start_receiving_openai_response(
 def consume_openai_stream_to_write_reply(
     *,
     client: WebClient,
-    wip_reply: dict,
+    wip_reply: Union[dict, SlackResponse],
     context: BoltContext,
     user_id: str,
     messages: List[Dict[str, Union[str, Dict[str, str]]]],
@@ -287,8 +299,8 @@ def context_length(
     model: str,
 ) -> int:
     if model == GPT_3_5_TURBO_MODEL:
-        # Note that GPT_3_5_TURBO_MODEL may change over time. Return context length assuming GPT_3_5_TURBO_0613_MODEL.
-        return context_length(model=GPT_3_5_TURBO_0613_MODEL)
+        # Note that GPT_3_5_TURBO_MODEL may change over time. Return context length assuming GPT_3_5_TURBO_0125_MODEL.
+        return context_length(model=GPT_3_5_TURBO_0125_MODEL)
     if model == GPT_3_5_TURBO_16K_MODEL:
         # Note that GPT_3_5_TURBO_16K_MODEL may change over time. Return context length assuming GPT_3_5_TURBO_16K_0613_MODEL.
         return context_length(model=GPT_3_5_TURBO_16K_0613_MODEL)
@@ -298,14 +310,30 @@ def context_length(
     elif model == GPT_4_32K_MODEL:
         # Note that GPT_4_32K_MODEL may change over time. Return context length assuming GPT_4_32K_0613_MODEL.
         return context_length(model=GPT_4_32K_0613_MODEL)
+    elif model == GPT_4_TURBO_PREVIEW_MODEL:
+        # Note that GPT_4_TURBO_PREVIEW_MODEL may change over time. Return context length assuming GPT_4_0125_PREVIEW_MODEL.
+        return context_length(model=GPT_4_0125_PREVIEW_MODEL)
+    elif model == GPT_4_TURBO_MODEL:
+        # Note that GPT_4_TURBO_MODEL may change over time. Return context length assuming GPT_4_TURBO_2024_04_09_MODEL.
+        return context_length(model=GPT_4_TURBO_2024_04_09_MODEL)
     elif model == GPT_3_5_TURBO_0301_MODEL or model == GPT_3_5_TURBO_0613_MODEL:
         return 4096
-    elif model == GPT_3_5_TURBO_16K_0613_MODEL:
+    elif (
+        model == GPT_3_5_TURBO_16K_0613_MODEL
+        or model == GPT_3_5_TURBO_1106_MODEL
+        or model == GPT_3_5_TURBO_0125_MODEL
+    ):
         return 16384
     elif model == GPT_4_0314_MODEL or model == GPT_4_0613_MODEL:
         return 8192
     elif model == GPT_4_32K_0314_MODEL or model == GPT_4_32K_0613_MODEL:
         return 32768
+    elif (
+        model == GPT_4_1106_PREVIEW_MODEL
+        or model == GPT_4_0125_PREVIEW_MODEL
+        or model == GPT_4_TURBO_2024_04_09_MODEL
+    ):
+        return 128000
     else:
         error = f"Calculating the length of the context window for model {model} is not yet supported."
         raise NotImplementedError(error)
@@ -324,10 +352,16 @@ def calculate_num_tokens(
     if model in {
         GPT_3_5_TURBO_0613_MODEL,
         GPT_3_5_TURBO_16K_0613_MODEL,
+        GPT_3_5_TURBO_1106_MODEL,
+        GPT_3_5_TURBO_0125_MODEL,
         GPT_4_0314_MODEL,
         GPT_4_32K_0314_MODEL,
         GPT_4_0613_MODEL,
         GPT_4_32K_0613_MODEL,
+        GPT_4_1106_PREVIEW_MODEL,
+        GPT_4_0125_PREVIEW_MODEL,
+        GPT_4_TURBO_PREVIEW_MODEL,
+        GPT_4_TURBO_2024_04_09_MODEL,
     }:
         tokens_per_message = 3
         tokens_per_name = 1
@@ -337,14 +371,17 @@ def calculate_num_tokens(
         )
         tokens_per_name = -1  # if there's a name, the role is omitted
     elif model == GPT_3_5_TURBO_MODEL:
-        # Note that GPT_3_5_TURBO_MODEL may change over time. Return num tokens assuming GPT_3_5_TURBO_0613_MODEL.
-        return calculate_num_tokens(messages, model=GPT_3_5_TURBO_0613_MODEL)
+        # Note that GPT_3_5_TURBO_MODEL may change over time. Return num tokens assuming GPT_3_5_TURBO_0125_MODEL.
+        return calculate_num_tokens(messages, model=GPT_3_5_TURBO_0125_MODEL)
     elif model == GPT_3_5_TURBO_16K_MODEL:
         # Note that GPT_3_5_TURBO_16K_MODEL may change over time. Return num tokens assuming GPT_3_5_TURBO_16K_0613_MODEL.
         return calculate_num_tokens(messages, model=GPT_3_5_TURBO_16K_0613_MODEL)
     elif model == GPT_4_MODEL:
         # Note that GPT_4_MODEL may change over time. Return num tokens assuming GPT_4_0613_MODEL.
         return calculate_num_tokens(messages, model=GPT_4_0613_MODEL)
+    elif model == GPT_4_TURBO_MODEL:
+        # Note that GPT_4_TURBO_MODEL may change over time. Return num tokens assuming GPT_4_TURBO_2024_04_09_MODEL.
+        return calculate_num_tokens(messages, model=GPT_4_TURBO_2024_04_09_MODEL)
     elif model == GPT_4_32K_MODEL:
         # Note that GPT_4_32K_MODEL may change over time. Return num tokens assuming GPT_4_32K_0613_MODEL.
         return calculate_num_tokens(messages, model=GPT_4_32K_0613_MODEL)
@@ -507,17 +544,24 @@ def generate_proofreading_result(
     logger: logging.Logger,
     openai_api_key: str,
     original_text: str,
+    tone_and_voice: Optional[str] = None,
     timeout_seconds: int,
 ) -> str:
+    system_content = (
+        "You're an assistant tasked with helping Slack users by proofreading a given text. "
+        "Your task is to enhance the quality of the sentences provided "
+        "without altering their original meaning as far as possible. "
+    )
+    if tone_and_voice is not None:
+        system_content += (
+            f"The generated output must be a suitable one for {tone_and_voice}. "
+        )
+    system_content += "Lastly, generating results swiftly should be prioritized over achieving perfection."
+
     messages = [
         {
             "role": "system",
-            "content": (
-                "You're an assistant tasked with helping Slack users by proofreading a given text. "
-                "Your task is to enhance the quality of the sentences provided "
-                "without altering their original meaning as far as possible. "
-                "Lastly, generating results swiftly should be prioritized over achieving perfection."
-            ),
+            "content": system_content,
         },
         {
             "role": "user",
